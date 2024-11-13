@@ -1,0 +1,255 @@
+using System.Collections.Generic; // Use standard C# collections
+using UnityEngine;
+using MelonLoader;
+using System.Collections;
+using System.IO;
+
+namespace GoldenPanMod
+{
+    public class GoldenPan : MelonMod
+    {
+        private GameObject fryingPan;
+        private HashSet<GameObject> goldenizedObjects; // Use standard C# HashSet<GameObject>
+        private Coroutine checkCoroutine;
+
+        public override void OnInitializeMelon()
+        {
+            MelonLogger.Msg("GoldenPanMod loaded!");
+            goldenizedObjects = new HashSet<GameObject>(); // Initialize standard HashSet
+
+            MelonCoroutines.Start(FindAndModifyFryingPan());
+        }
+
+        private IEnumerator FindAndModifyFryingPan()
+        {
+            int retryCount = 0;
+            while (fryingPan == null && retryCount < 1000)
+            {
+                fryingPan = GameObject.Find("FryingPan [0]");
+
+                if (fryingPan != null)
+                {
+                    MelonLogger.Msg("Frying pan found!");
+
+                    MeshCollider meshCollider = fryingPan.GetComponent<MeshCollider>();
+                    if (meshCollider == null)
+                    {
+                        meshCollider = fryingPan.AddComponent<MeshCollider>();
+                        meshCollider.convex = true;
+                        MelonLogger.Msg("MeshCollider added to the frying pan.");
+                    }
+
+                    Renderer[] fryPanRenderers = fryingPan.GetComponentsInChildren<Renderer>();
+                    if (fryPanRenderers.Length > 0)
+                    {
+                        ApplyGoldTextureToAll(fryPanRenderers);
+                    }
+
+                    // Start checking nearby objects
+                    checkCoroutine = (Coroutine)MelonCoroutines.Start(CheckNearbyObjects());
+                    yield break;
+                }
+                else
+                {
+                    MelonLogger.Msg("Frying pan not found, retrying...");
+                }
+
+                retryCount++;
+                yield return new WaitForSeconds(1f);
+            }
+
+            if (fryingPan == null)
+            {
+                MelonLogger.Error("Failed to find frying pan after multiple attempts.");
+            }
+        }
+
+        private IEnumerator CheckNearbyObjects()
+        {
+            float checkRadius = 0.2f;
+            int layerMask = 1 << LayerMask.NameToLayer("Default");
+
+            while (true)
+            {
+                Collider[] nearbyColliders = Physics.OverlapSphere(fryingPan.transform.position, checkRadius, layerMask);
+
+                foreach (Collider collider in nearbyColliders)
+                {
+                    GameObject objWithRenderer = FindRendererObject(collider.gameObject);
+
+                    if (objWithRenderer == null || goldenizedObjects.Contains(objWithRenderer))
+                        continue;
+
+                    ApplyGoldTextureRecursively(objWithRenderer);
+                    goldenizedObjects.Add(objWithRenderer);
+                    MelonLogger.Msg($"Applied gold texture to: {objWithRenderer.name}");
+                }
+
+                yield return new WaitForSeconds(0.5f);
+            }
+        }
+
+        private GameObject FindRendererObject(GameObject obj)
+        {
+            // Ensure obj is not null or of an unexpected type
+            if (obj == null)
+            {
+                MelonLogger.Msg("Object is null, skipping...");
+                return null;
+            }
+
+            // Try to get a valid Renderer object
+            GameObject rendererObj = null;
+
+            Transform current = obj.transform;
+            while (current != null)
+            {
+                // Check if current is valid and has a Renderer component
+                if (current.GetComponent<Renderer>() != null)
+                {
+                    rendererObj = current.gameObject;
+                    break;
+                }
+                current = current.parent;
+            }
+
+            // If not found in the current object, search children
+            if (rendererObj == null)
+            {
+                rendererObj = FindRendererInChildren(obj);
+            }
+
+            // If found, check for valid Transform component to prevent casting errors
+            if (rendererObj != null && rendererObj.GetComponent<Transform>() != null)
+            {
+                return rendererObj;
+            }
+            else
+            {
+                // Log and return null for invalid objects
+                MelonLogger.Msg($"Skipping invalid object {obj.name}. No valid Transform component found.");
+                return null;
+            }
+        }
+
+        private GameObject FindRendererInChildren(GameObject obj)
+        {
+            // Check for null object
+            if (obj == null)
+            {
+                MelonLogger.Msg("Object is null in children search, skipping...");
+                return null;
+            }
+
+            foreach (Transform child in obj.transform)
+            {
+                // Ensure child is valid and has a Renderer component
+                if (child != null && child.GetComponent<Renderer>() != null)
+                {
+                    return child.gameObject;
+                }
+
+                // Recursively check children
+                GameObject foundInChild = FindRendererInChildren(child.gameObject);
+                if (foundInChild != null)
+                    return foundInChild;
+            }
+
+            return null;
+        }
+
+        private void ApplyGoldTextureRecursively(GameObject obj)
+        {
+            // Ensure obj is valid and has a Renderer component
+            if (obj == null)
+            {
+                MelonLogger.Msg($"Skipping null object.");
+                return;
+            }
+
+            // Check if Renderer is missing
+            if (obj.GetComponent<Renderer>() == null)
+            {
+                // Add a Renderer if missing (optional behavior)
+                Renderer newRenderer = obj.AddComponent<MeshRenderer>(); // Add a MeshRenderer by default
+                MelonLogger.Msg($"Added missing Renderer to {obj.name}");
+            }
+
+            // Ensure the object has a Transform component
+            if (obj.GetComponent<Transform>() == null)
+            {
+                // Add a Transform if missing (should never be needed, but safe to check)
+                obj.AddComponent<Transform>();
+                MelonLogger.Msg($"Added missing Transform to {obj.name}");
+            }
+
+            // Now, apply the gold texture
+            Renderer[] renderers = obj.GetComponentsInChildren<Renderer>(true);
+            ApplyGoldTextureToAll(renderers);
+
+            // Recursively check children
+            foreach (Transform child in obj.transform)
+            {
+                ApplyGoldTextureRecursively(child.gameObject);
+            }
+        }
+
+        public void ApplyGoldTextureToAll(Renderer[] renderers)
+        {
+            Texture2D goldTexture = LoadGoldTextureFromFile();
+
+            if (goldTexture != null)
+            {
+                foreach (Renderer renderer in renderers)
+                {
+                    if (renderer == null || renderer.material == null) continue;
+
+                    foreach (Material mat in renderer.materials)
+                    {
+                        mat.mainTexture = goldTexture;
+                    }
+                }
+            }
+            else
+            {
+                MelonLogger.Error("Failed to load or apply gold texture.");
+            }
+        }
+
+        public Texture2D LoadGoldTextureFromFile()
+        {
+            string bonelabGameDirectory = Path.GetDirectoryName(Application.dataPath);
+            string texturePath = Path.Combine(bonelabGameDirectory, "Textures", "GoldTexture.jpg");
+
+            if (!File.Exists(texturePath))
+            {
+                MelonLogger.Error($"Texture file not found at: {texturePath}");
+                return null;
+            }
+
+            byte[] fileData = File.ReadAllBytes(texturePath);
+            Texture2D texture = new Texture2D(2, 2);
+
+            if (!texture.LoadImage(fileData))
+            {
+                MelonLogger.Error("Failed to load texture image.");
+                return null;
+            }
+
+            return texture;
+        }
+
+        public override void OnSceneWasLoaded(int buildIndex, string sceneName)
+        {
+            // Stop the coroutine safely when the scene is loaded
+            if (checkCoroutine != null)
+            {
+                MelonCoroutines.Stop(checkCoroutine);
+                checkCoroutine = null;
+            }
+
+            // Reinitialize the frying pan and start the check again
+            MelonCoroutines.Start(FindAndModifyFryingPan());
+        }
+    }
+}
